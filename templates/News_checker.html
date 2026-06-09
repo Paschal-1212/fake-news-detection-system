@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>News Checker - Fake News Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            margin: 0;
+        }
+
+        .dashboard-layout {
+            display: flex;
+            min-height: 100vh;
+            background: #f8fafc;
+        }
+
+        .sidebar {
+            width: 240px;
+            background: #0f172a;
+            color: white;
+            padding: 20px;
+        }
+
+        .sidebar a {
+            color: white;
+            text-decoration: none;
+            display: block;
+            padding: 12px 16px;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar a:hover {
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transform: translateX(5px);
+        }
+
+        .main {
+            flex: 1;
+            padding: 40px;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        textarea, input {
+            width: 100%;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .result-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+
+        .fake { color: red; }
+        .real { color: green; }
+    </style>
+</head>
+
+<body>
+
+<div class="dashboard-layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <h3>📰 AI Detector</h3>
+        <a href="{{ url_for('home') }}">🏠 Home</a>
+        <a href="{{ url_for('dashboard') }}">📊 Dashboard</a>
+        <a href="{{ url_for('news_checker') }}">🔍 News Checker</a>
+        <a href="{{ url_for('reports') }}">📈 Reports</a>
+        <a href="{{ url_for('admin') }}">⚙️ Admin</a>
+        <div style="margin-top: auto; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); margin-left: 0; margin-right: 0;">
+            <p style="color: #9ca3af; font-size: 0.85rem; margin-bottom: 10px; padding: 0 10px;">👤 {{ session.get('username', 'User') }}</p>
+            <a href="{{ url_for('logout') }}" style="
+                display: block;
+                padding: 10px 16px;
+                background: #dc2626;
+                color: white;
+                border-radius: 6px;
+                text-align: center;
+                text-decoration: none;
+                font-weight: 500;
+                transition: background 0.3s ease;
+                margin: 0 10px;
+            " onmouseover="this.style.background='#991b1b'" onmouseout="this.style.background='#dc2626'">🚪 Logout</a>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+        <h2>🔍 News Checker</h2>
+        <p>Check news using text OR URL</p>
+
+        <!-- INPUT FORM -->
+        <div class="card">
+
+            <form method="POST">
+
+                <!-- URL -->
+                <label>🔗 News URL</label>
+                <input 
+                    type="url" 
+                    name="news_url"
+                    placeholder="https://example.com/news"
+                    value="{{ request.form.news_url if request.method == 'POST' else '' }}"
+                >
+
+                <p style="text-align:center; margin:10px;">OR</p>
+
+                <!-- TEXT -->
+                <label>📝 News Text</label>
+                <textarea 
+                    name="news_text"
+                    placeholder="Paste news here..."
+                >{{ request.form.news_text if request.method == 'POST' else '' }}</textarea>
+
+                <br><br>
+
+                <button class="btn-primary">🚀 Check</button>
+
+            </form>
+
+        </div>
+
+        <!-- ERROR -->
+        {% if error %}
+        <div style="background:#fee2e2; padding:10px; border-radius:6px; color:#991b1b;">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        <!-- RESULT -->
+        {% if prediction %}
+        <div class="result-container">
+
+            <h3 class="{% if prediction.is_fake %}fake{% else %}real{% endif %}">
+                {% if prediction.is_fake %}
+                    🚨 FAKE NEWS
+                {% else %}
+                    ✅ REAL NEWS
+                {% endif %}
+            </h3>
+
+            <p><strong>Confidence:</strong> {{ prediction.confidence }}%</p>
+
+        </div>
+        {% endif %}
+
+        <!-- ARTICLE (URL RESULT) -->
+        {% if article %}
+        <div class="result-container">
+
+            <h3>📰 {{ article.title }}</h3>
+            <p>Source: {{ article.source }}</p>
+
+            {% if article.image %}
+            <img src="{{ article.image }}" style="width:100%; border-radius:10px;">
+            {% endif %}
+
+            <br><br>
+            <a href="{{ article.url }}" target="_blank">Read Full Article</a>
+
+        </div>
+        {% endif %}
+
+    </main>
+
+</div>
+
+</body>
+</html>
