@@ -2,18 +2,23 @@
 Professional Fake News Detection API
 Uses advanced ML model for accurate predictions
 """
-
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file, flash
 from flask_mysqldb import MySQL
 import pickle
 import re
 import os
 import logging
+import numpy as np
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 import csv
 from io import StringIO, BytesIO
+from scipy.sparse import hstack, csr_matrix
+
+# NEW IMPORTS FOR URL FEATURE
+from newspaper import Article, Config
+from urllib.parse import urlparse
 
 # NEW IMPORTS FOR URL FEATURE
 from newspaper import Article
@@ -56,6 +61,100 @@ def preprocess_text(text):
     
     return text
 
+def preprocess_text(text):
+    if not isinstance(text, str) or len(text.strip()) == 0:
+        return ""
+    
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+|https\S+', ' ', text)
+    text = re.sub(r'\S+@\S+', ' ', text)
+    text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
+    text = re.sub(r'\b\d\b', ' ', text)
+    text = ' '.join(text.split())
+    
+    return text
+
+# ============== LINGUISTIC FEATURES ==============
+def extract_linguistic_features(texts):
+    features = []
+    
+    clickbait_words = [
+        'shocking', 'bombshell', 'exclusive', 'breaking',
+        'exposed', 'secret', 'conspiracy', 'miracle', 'eliminate',
+        'completely', 'never', 'always', 'proof', 'confirmed',
+        'anonymous', 'sources say', 'insiders', 'urgent',
+        'deep state', 'mainstream media', 'they dont want',
+        'wake up', 'sheeple', 'globalist', 'new world order',
+        'cover up', 'coverup', 'whistleblower', 'suppressed',
+        'banned', 'censored', 'truth they hide'
+    ]
+    
+    credible_words = [
+        'according to', 'reported', 'announced', 'stated',
+        'research', 'study', 'published', 'university',
+        'percent', 'data', 'analysis', 'official', 'government',
+        'conference', 'journal', 'scientists', 'researchers'
+    ]
+
+    conspiracy_words = [
+        'mind control', 'chemtrails', 'microchip', 'depopulation',
+        'illuminati', 'lizard', 'flat earth', 'crisis actor',
+        'false flag', 'staged', 'hoax', 'plandemic',
+        'chemicals in', 'water supply', 'vaccine causes',
+        'government putting', 'secretly putting',
+        'poison', 'control the population',
+        'chemtrail', 'microchipped', 'depopulate',
+        'brainwash', 'brainwashing', 'subliminal',
+        'fluoride', 'toxin', 'toxins', 'bioweapon',
+        'nwo', '5g', 'adrenochrome', 'satanic',
+        'reptilian', 'shapeshifter', 'mk ultra', 'mkultra',
+        'they confirmed', 'officially confirmed', 'finally confirmed',
+        'government confirmed', 'proven that', 'it has been proven',
+        'scientists admit', 'doctors admit', 'they admit',
+        'what they dont tell', 'what they wont tell',
+        'putting in the', 'putting chemicals', 'lacing the',
+        'spraying us', 'poisoning us', 'poisoning the'
+    ]
+    
+    for text in texts:
+        text_lower       = str(text).lower()
+        words            = text_lower.split()
+        word_count       = max(len(words), 1)
+        
+        caps_ratio       = sum(1 for c in str(text) if c.isupper()) / max(len(str(text)), 1)
+        exclaim_count    = str(text).count('!')
+        question_count   = str(text).count('?')
+        clickbait_count  = sum(1 for w in clickbait_words if w in text_lower)
+        all_caps_words   = sum(1 for w in str(text).split() if w.isupper() and len(w) > 2)
+        credible_count   = sum(1 for w in credible_words if w in text_lower)
+        avg_word_len     = np.mean([len(w) for w in words]) if words else 0
+        unique_ratio     = len(set(words)) / word_count
+        text_length      = len(str(text))
+        sentence_count   = str(text).count('.') + str(text).count('!') + str(text).count('?')
+        avg_sent_len     = word_count / max(sentence_count, 1)
+        has_quotes       = int('"' in str(text) or "'" in str(text))
+        number_count     = len(re.findall(r'\b\d+\.?\d*\b', str(text)))
+        conspiracy_count = sum(1 for w in conspiracy_words if w in text_lower)
+        
+        features.append([
+            caps_ratio,
+            exclaim_count,
+            question_count,
+            clickbait_count,
+            all_caps_words,
+            credible_count,
+            avg_word_len,
+            unique_ratio,
+            text_length,
+            avg_sent_len,
+            has_quotes,
+            number_count,
+            word_count,
+            conspiracy_count
+        ])
+    
+    return np.array(features)
+
 # ============== MODEL LOADING ==============
 MODEL_DATA = None
 
@@ -85,98 +184,51 @@ if not load_model():
 PREDICTION_HISTORY = []
 
 def get_prediction(text):
-    """Get prediction with correct fake/real mapping"""
-
     try:
-
         if not MODEL_DATA:
-            return {
-                'status': 'error',
-                'message': 'Model not loaded. Run training script first.'
-            }
+            return {'status': 'error', 'message': 'Model not loaded.'}
 
-        # ================= VALIDATION =================
-        if not isinstance(text, str):
-            return {
-                'status': 'error',
-                'message': 'Input must be text'
-            }
+        if not isinstance(text, str) or len(text.strip()) < 10:
+            return {'status': 'error', 'message': 'Text too short (min 10 characters)'}
 
-        text = text.strip()
-
-        if len(text) < 10:
-            return {
-                'status': 'error',
-                'message': 'Text too short (min 10 characters)'
-            }
-
-        # ================= PREPROCESS =================
-        processed_text = preprocess_text(text)
-
-        if not processed_text:
-            return {
-                'status': 'error',
-                'message': 'No valid text found'
-            }
-
-        # ================= LOAD MODEL =================
-        model = MODEL_DATA['model']
+        model      = MODEL_DATA['model']
         vectorizer = MODEL_DATA['vectorizer']
+        scaler     = MODEL_DATA.get('scaler')      # new
+        classes    = model.classes_.tolist()
 
-        # ================= PREDICTION =================
-        X_vectorized = vectorizer.transform([processed_text])
+        processed = preprocess_text(text)
 
-        prediction = model.predict(X_vectorized)[0]
-        probabilities = model.predict_proba(X_vectorized)[0]
+        # TF-IDF features
+        tfidf_features = vectorizer.transform([processed])
 
-        # DEBUG OUTPUT
-        print("=" * 50)
-        print("INPUT:", text)
-        print("Prediction:", prediction)
-        print("Classes:", model.classes_)
-        print("Probabilities:", probabilities)
-        print("=" * 50)
+        # Linguistic features (if scaler exists in model)
+        if scaler:
+            from scipy.sparse import hstack, csr_matrix
+            ling_features    = extract_linguistic_features([text])
+            ling_scaled      = scaler.transform(ling_features)
+            X_combined       = hstack([tfidf_features, csr_matrix(ling_scaled)])
+        else:
+            X_combined = tfidf_features
 
-        # ================= PROBABILITIES =================
-        confidence_dict = {}
+        prediction    = model.predict(X_combined)[0]
+        probabilities = model.predict_proba(X_combined)[0]
 
-        for i, cls in enumerate(model.classes_):
+        fake_idx  = classes.index(0)
+        real_idx  = classes.index(1)
+        fake_prob = round(float(probabilities[fake_idx]) * 100, 2)
+        real_prob = round(float(probabilities[real_idx]) * 100, 2)
 
-            if str(cls) == "0":
-                confidence_dict["FAKE"] = round(
-                    float(probabilities[i]) * 100, 2
-                )
+        confidence_dict = {"FAKE": fake_prob, "REAL": real_prob}
 
-            elif str(cls) == "1":
-                confidence_dict["REAL"] = round(
-                    float(probabilities[i]) * 100, 2
-                )
-
-            else:
-                confidence_dict[str(cls).upper()] = round(
-                    float(probabilities[i]) * 100, 2
-                )
-
-        fake_confidence = confidence_dict.get("FAKE", 0)
-        real_confidence = confidence_dict.get("REAL", 1)
-
-        # ================= PREDICTION LABEL =================
-
-        if prediction == 0:
+        if int(prediction) == 0:
             prediction_label = "FAKE"
-            is_fake = True
-            max_confidence = float(probabilities[0]) * 100
-
+            is_fake          = True
+            max_confidence   = fake_prob
         else:
             prediction_label = "REAL"
-            is_fake = False
-            max_confidence = float(probabilities[1]) * 100
+            is_fake          = False
+            max_confidence   = real_prob
 
-        confidence_dict = {
-            "FAKE": round(float(probabilities[0]) * 100, 2),
-            "REAL": round(float(probabilities[1]) * 100, 2)
-        }
-        # ================= CONFIDENCE LEVEL =================
         if max_confidence >= 75:
             confidence_level = "high"
         elif max_confidence >= 62:
@@ -184,64 +236,54 @@ def get_prediction(text):
         else:
             confidence_level = "inconclusive"
 
-        processing_note = None
-
+        # Build processing note BEFORE the result dict
         if confidence_level == "inconclusive":
-            processing_note = (
-                "⚠️ INCONCLUSIVE - Manual review recommended"
-            )
+            processing_note = "⚠️ INCONCLUSIVE - Manual review recommended"
+        elif confidence_level == "high" and not is_fake:
+            processing_note = "⚠️ Note: Calm-sounding misinformation may require manual verification"
+        else:
+            processing_note = None
 
-        # ================= RESULT =================
         result = {
-            'status': 'success',
-            'prediction': prediction_label,
-            'confidence': round(max_confidence, 2),
+            'status':           'success',
+            'prediction':       prediction_label,
+            'confidence':       round(max_confidence, 2),
             'confidence_level': confidence_level,
-            'probabilities': confidence_dict,
-            'is_fake': is_fake,
-            'text_preview': (
-                text[:100] + "..."
-                if len(text) > 100
-                else text
-            ),
-            'word_count': len(text.split()),
-            'timestamp': datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S'
-            ),
-            'processing_note': processing_note
+            'probabilities':    confidence_dict,
+            'is_fake':          is_fake,
+            'text_preview':     text[:100] + "..." if len(text) > 100 else text,
+            'word_count':       len(text.split()),
+            'timestamp':        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'processing_note':  processing_note
         }
 
         PREDICTION_HISTORY.append(result)
-
-        logger.info(
-            f"Prediction: {prediction_label} "
-            f"({max_confidence:.1f}%)"
-        )
-
         return result
 
     except Exception as e:
-
-        logger.error(
-            f"Error during prediction: {e}"
-        )
-
-        return {
-            'status': 'error',
-            'message': f'Prediction error: {str(e)}'
-        }
+        logger.error(f"Prediction error: {e}")
+        return {'status': 'error', 'message': f'Prediction error: {str(e)}'}
 
 # ============== URL EXTRACTION ==============
 def extract_article_details(url):
     """Extract article text from URL using newspaper3k"""
     try:
-        article = Article(url)
+        config = Config()
+        config.browser_user_agent = (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
+        )
+        config.request_timeout = 10
+        config.fetch_images = False
+
+        article = Article(url, config=config)
         article.download()
         article.parse()
 
-        text = article.text
-        title = article.title
-        image = article.top_image
+        text   = article.text
+        title  = article.title
+        image  = article.top_image
         source = urlparse(url).netloc
 
         if not text or len(text) < 50:
@@ -249,16 +291,16 @@ def extract_article_details(url):
 
         logger.info(f"Successfully extracted article from {source}")
         return {
-            "text": text,
-            "title": title,
-            "image": image,
+            "text":   text,
+            "title":  title,
+            "image":  image,
             "source": source,
-            "url": url
+            "url":    url
         }, None
 
     except Exception as e:
         logger.error(f"Error extracting article from URL: {e}")
-        return None, f"Error extracting article: {str(e)}"
+        return None, f"⚠️ Could not extract article from this URL. The website may be blocking automated access. Please paste the article text directly instead."
 
 # ============== ADVANCED METRICS HELPERS ==============
 
