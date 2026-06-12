@@ -85,110 +85,147 @@ if not load_model():
 PREDICTION_HISTORY = []
 
 def get_prediction(text):
-    """Get prediction with confidence score and edge case handling"""
-    if not MODEL_DATA:
-        return {
-            'status': 'error',
-            'message': 'Model not loaded. Run train_advanced_model.py first.'
-        }
-    
-    # ============== INPUT VALIDATION ==============
-    if not isinstance(text, str):
-        return {
-            'status': 'error',
-            'message': 'Input must be text'
-        }
-    
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    
-    # Check minimum length (at least 10 characters)
-    if len(text) < 10:
-        return {
-            'status': 'error',
-            'message': 'Text too short. Please provide at least 10 characters.'
-        }
-    
-    # Check for minimal word count
-    word_count = len(text.split())
-    if word_count < 3:
-        return {
-            'status': 'error',
-            'message': 'Text too short. Please provide at least 3 words.'
-        }
-    
+    """Get prediction with correct fake/real mapping"""
+
     try:
-        # Preprocess text (same as training)
-        processed_text = preprocess_text(text)
-        
-        if not processed_text or len(processed_text.split()) < 2:
+
+        if not MODEL_DATA:
             return {
                 'status': 'error',
-                'message': 'Text contains no meaningful words.'
+                'message': 'Model not loaded. Run training script first.'
             }
-        
-        # Handle both dict and tuple formats
-        if isinstance(MODEL_DATA, dict):
-            model = MODEL_DATA['model']
-            vectorizer = MODEL_DATA['vectorizer']
-            classes = MODEL_DATA.get('classes', ['real', 'fake'])
-        else:
-            # If it's a tuple (older format)
-            model = MODEL_DATA[0]
-            vectorizer = MODEL_DATA[1]
-            classes = model.classes_.tolist()
-        
-        # Vectorize input text (use preprocessed version)
+
+        # ================= VALIDATION =================
+        if not isinstance(text, str):
+            return {
+                'status': 'error',
+                'message': 'Input must be text'
+            }
+
+        text = text.strip()
+
+        if len(text) < 10:
+            return {
+                'status': 'error',
+                'message': 'Text too short (min 10 characters)'
+            }
+
+        # ================= PREPROCESS =================
+        processed_text = preprocess_text(text)
+
+        if not processed_text:
+            return {
+                'status': 'error',
+                'message': 'No valid text found'
+            }
+
+        # ================= LOAD MODEL =================
+        model = MODEL_DATA['model']
+        vectorizer = MODEL_DATA['vectorizer']
+
+        # ================= PREDICTION =================
         X_vectorized = vectorizer.transform([processed_text])
-        
-        # Get prediction
+
         prediction = model.predict(X_vectorized)[0]
-        
-        # Get probabilities for confidence
         probabilities = model.predict_proba(X_vectorized)[0]
-        
-        # Create probability dict with proper class names
+
+        # DEBUG OUTPUT
+        print("=" * 50)
+        print("INPUT:", text)
+        print("Prediction:", prediction)
+        print("Classes:", model.classes_)
+        print("Probabilities:", probabilities)
+        print("=" * 50)
+
+        # ================= PROBABILITIES =================
+        confidence_dict = {}
+
+        for i, cls in enumerate(model.classes_):
+
+            if str(cls) == "0":
+                confidence_dict["FAKE"] = round(
+                    float(probabilities[i]) * 100, 2
+                )
+
+            elif str(cls) == "1":
+                confidence_dict["REAL"] = round(
+                    float(probabilities[i]) * 100, 2
+                )
+
+            else:
+                confidence_dict[str(cls).upper()] = round(
+                    float(probabilities[i]) * 100, 2
+                )
+
+        fake_confidence = confidence_dict.get("FAKE", 0)
+        real_confidence = confidence_dict.get("REAL", 1)
+
+        # ================= PREDICTION LABEL =================
+
+        if prediction == 0:
+            prediction_label = "FAKE"
+            is_fake = True
+            max_confidence = float(probabilities[0]) * 100
+
+        else:
+            prediction_label = "REAL"
+            is_fake = False
+            max_confidence = float(probabilities[1]) * 100
+
         confidence_dict = {
-            classes[i]: float(probabilities[i]) * 100
-            for i in range(len(classes))
+            "FAKE": round(float(probabilities[0]) * 100, 2),
+            "REAL": round(float(probabilities[1]) * 100, 2)
         }
-        
-        # Get max confidence
-        max_confidence = max(confidence_dict.values())
-        
-        # ============== CONFIDENCE THRESHOLD ==============
-        confidence_level = (
-            "high" if max_confidence >= 75
-            else "medium" if max_confidence >= 62
-            else "inconclusive"
-        )
-        
-        # For inconclusive results, suggest manual review
+        # ================= CONFIDENCE LEVEL =================
+        if max_confidence >= 75:
+            confidence_level = "high"
+        elif max_confidence >= 62:
+            confidence_level = "medium"
+        else:
+            confidence_level = "inconclusive"
+
         processing_note = None
+
         if confidence_level == "inconclusive":
-            processing_note = "⚠️ INCONCLUSIVE (confidence near 50/50) - Manual review recommended"
-        
+            processing_note = (
+                "⚠️ INCONCLUSIVE - Manual review recommended"
+            )
+
+        # ================= RESULT =================
         result = {
             'status': 'success',
-            'prediction': prediction,
+            'prediction': prediction_label,
             'confidence': round(max_confidence, 2),
             'confidence_level': confidence_level,
-            'probabilities': {k: round(v, 2) for k, v in confidence_dict.items()},
-            'is_fake': str(prediction).lower() == 'fake',
-            'text_preview': text[:100] + '...' if len(text) > 100 else text,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'probabilities': confidence_dict,
+            'is_fake': is_fake,
+            'text_preview': (
+                text[:100] + "..."
+                if len(text) > 100
+                else text
+            ),
             'word_count': len(text.split()),
+            'timestamp': datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ),
             'processing_note': processing_note
         }
-        
-        # Store in history
+
         PREDICTION_HISTORY.append(result)
-        logger.info(f"Prediction made: {prediction} (confidence: {max_confidence:.1f}%)")
-        
+
+        logger.info(
+            f"Prediction: {prediction_label} "
+            f"({max_confidence:.1f}%)"
+        )
+
         return result
-    
+
     except Exception as e:
-        logger.error(f"Error during prediction: {e}")
+
+        logger.error(
+            f"Error during prediction: {e}"
+        )
+
         return {
             'status': 'error',
             'message': f'Prediction error: {str(e)}'
